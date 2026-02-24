@@ -1,0 +1,1 @@
+### Hacettepe AI Club Datathon 2026 Contest
