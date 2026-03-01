@@ -1,0 +1,327 @@
+
+============================================================
+Cell 0 [code]
+============================================================
+# import the libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+color_pal = sns.color_palette()
+plt.style.use('fivethirtyeight')
+
+import xgboost as xgb # The model for forecasting
+
+============================================================
+Cell 1 [code]
+============================================================
+df = pd.read_csv("train.csv")
+df = df.set_index('timestamp')
+
+============================================================
+Cell 2 [code]
+============================================================
+df.index = pd.to_datetime(df.index, format='ISO8601')
+df = df.sort_index()
+df.head()
+
+============================================================
+Cell 3 [code]
+============================================================
+df.tail()
+
+============================================================
+Cell 4 [code]
+============================================================
+df.columns
+
+============================================================
+Cell 5 [code]
+============================================================
+df_resampled = df['bk_level'].resample('1h').mean()
+
+df_resampled.plot(style='.', 
+                  figsize=(15, 5), 
+                  color=color_pal[0], 
+                  title='bk_level')
+
+plt.show()
+
+============================================================
+Cell 6 [markdown]
+============================================================
+# Feature Creation
+
+============================================================
+Cell 7 [code]
+============================================================
+df.index
+
+============================================================
+Cell 8 [code]
+============================================================
+df.columns
+
+============================================================
+Cell 9 [code]
+============================================================
+def create_features(df):
+    df = df.copy()
+    # Create elapsed_time column
+    df['starttime'] = pd.to_datetime(df['starttime'], format='ISO8601')
+    df['endtime'] = pd.to_datetime(df['endtime'], format='ISO8601')
+    df['elapsed_time'] = df['endtime'] - df['starttime']
+    df['elapsed_time'] = df['elapsed_time'].dt.total_seconds()
+
+    return df
+
+df = create_features(df)
+
+============================================================
+Cell 10 [code]
+============================================================
+df.columns
+
+============================================================
+Cell 11 [markdown]
+============================================================
+# Visualize our Feature / Target Relationship
+
+============================================================
+Cell 12 [code]
+============================================================
+fig, ax = plt.subplots(figsize=(150, 50))
+sns.boxplot(data=df, x='batchkey', y='bk_level')
+plt.show()
+
+============================================================
+Cell 13 [markdown]
+============================================================
+# Time Series Cross Validation
+
+============================================================
+Cell 14 [code]
+============================================================
+from sklearn.model_selection import GroupKFold
+
+============================================================
+Cell 15 [code]
+============================================================
+test_csv = pd.read_csv("test.csv")
+test_csv
+
+============================================================
+Cell 16 [code]
+============================================================
+train = create_features(df)
+gkf = GroupKFold(n_splits=5)
+df= df.sort_index()
+
+============================================================
+Cell 17 [markdown]
+============================================================
+# Lag Features
+
+============================================================
+Cell 18 [code]
+============================================================
+df['bk_target_level']
+
+============================================================
+Cell 19 [code]
+============================================================
+df['bk_dosage_valve']
+
+============================================================
+Cell 20 [code]
+============================================================
+df['dosage_curve_type']
+
+============================================================
+Cell 21 [code]
+============================================================
+def add_lags(df):
+    df['target_lag3'] = df.groupby(['machineid', 'commandno'])['bk_target_level'].shift(3)
+    df['target_lag3_diff'] = df['bk_target_level'] - df['target_lag3']
+    return df
+
+df = add_lags(df)
+
+============================================================
+Cell 22 [code]
+============================================================
+df = df.dropna(subset=["target_lag3", "target_lag3_diff"])
+
+============================================================
+Cell 23 [code]
+============================================================
+df.head()
+
+============================================================
+Cell 24 [code]
+============================================================
+df.tail()
+
+============================================================
+Cell 25 [code]
+============================================================
+df.columns
+
+============================================================
+Cell 26 [code]
+============================================================
+df['proses_id'] = (df.groupby('machineid')['commandno'].diff() != 0).cumsum()
+
+============================================================
+Cell 27 [markdown]
+============================================================
+# Train Using Cross Validation
+
+============================================================
+Cell 28 [code]
+============================================================
+from sklearn.metrics import mean_absolute_error
+
+FEATURES = ['target_lag3', 'kk_target_level', 
+            'commandno', 'slow_dosage_valve', 'elapsed_time', 'stepno', 
+            'kk_irtibat_valve', 'kk_dosage_valve', 'bk_target_level', 'target_lag3_diff', 
+            'ak_level', 'fabric_weight', 'bk_irtibat_valve']
+
+TARGET = 'bk_level'
+
+gkf = GroupKFold(n_splits=5)
+fold = 0
+scores = []
+
+for train_idx, val_idx in gkf.split(df, groups=df['proses_id']):
+      X_train = df.iloc[train_idx][FEATURES]
+      y_train = df.iloc[train_idx][TARGET]
+
+      X_test = df.iloc[val_idx][FEATURES]
+      y_test = df.iloc[val_idx][TARGET]
+
+      print(f"fold: {fold}")
+      
+      reg = xgb.XGBRegressor(base_score=0.5, 
+                             booster='gbtree', 
+                             n_estimators=5000, 
+                             objective='reg:absoluteerror',
+                             max_depth=3,       
+                             learning_rate=0.01,
+                             tree_method='hist',
+                             device='cuda') # GPU
+      
+      reg.fit(X_train, y_train, verbose=True)
+      y_pred = reg.predict(X_test)
+
+      score = mean_absolute_error(y_test, y_pred)
+      scores.append(score)
+      fold += 1  
+
+============================================================
+Cell 29 [code]
+============================================================
+print(f'Score across folds {np.mean(scores):0.4f}')
+print(f'Fold scores:{scores}')
+
+============================================================
+Cell 30 [markdown]
+============================================================
+# FEATURE IMPORTANCE
+
+============================================================
+Cell 31 [code]
+============================================================
+fi = pd.DataFrame(data=reg.feature_importances_, 
+                  index=reg.feature_names_in_, 
+                  columns=['importance'])
+
+============================================================
+Cell 32 [code]
+============================================================
+fi.sort_values('importance').plot(kind='barh', title='Feature Importance')
+plt.show()
+
+============================================================
+Cell 33 [code]
+============================================================
+fi = fi.sort_values('importance')
+fi
+
+============================================================
+Cell 34 [code]
+============================================================
+df.columns
+
+============================================================
+Cell 35 [code]
+============================================================
+# Retrining
+df = create_features(df)
+df = add_lags(df)
+
+FEATURES = ['target_lag3', 'kk_target_level', 
+            'commandno', 'slow_dosage_valve', 'elapsed_time', 'stepno', 
+            'kk_irtibat_valve', 'kk_dosage_valve', 'bk_target_level', 'target_lag3_diff', 
+            'ak_level', 'fabric_weight', 'bk_irtibat_valve']
+TARGET = 'bk_level'
+
+X_all = df[FEATURES]
+y_all = df[TARGET]
+
+reg_final = xgb.XGBRegressor(base_score=0.5, 
+                             booster='gbtree',    
+                             n_estimators=5000, 
+                             objective='reg:absoluteerror',
+                             max_depth=3,
+                             learning_rate=0.01,
+                             tree_method='hist',
+                             device='cuda') 
+reg_final.fit(X_all, y_all, verbose=100)
+
+============================================================
+Cell 36 [markdown]
+============================================================
+# TEST
+
+============================================================
+Cell 37 [code]
+============================================================
+test_csv = pd.read_csv("test.csv")
+test_csv = test_csv.set_index('ztimestamp')
+test_csv.index = pd.to_datetime(test_csv.index, format='ISO8601')
+test_csv = test_csv.sort_index()
+
+============================================================
+Cell 38 [code]
+============================================================
+test_csv.head()
+
+============================================================
+Cell 39 [code]
+============================================================
+history_tail = df.tail(5)
+test_and_history = pd.concat([history_tail, test_csv])
+test_and_history = create_features(test_and_history)
+test_and_history = add_lags(test_and_history)
+X_test_final = test_and_history.tail(len(test_csv))[FEATURES]
+test_predictions = reg_final.predict(X_test_final)
+
+============================================================
+Cell 40 [code]
+============================================================
+sample_csv = pd.read_csv("sample_submission_sample.csv")
+sample_csv.head()
+
+============================================================
+Cell 41 [code]
+============================================================
+sample_csv['bk_level'] = test_predictions
+sample_csv = sample_csv.rename(columns={'row_id' : 'Id', 'bk_level' : 'Predicted'})
+sample_csv.to_csv('sample_submission.csv', index=False)
+
+============================================================
+Cell 42 [code]
+============================================================
+df1 = pd.read_csv("sample_submission.csv")
+df1
